@@ -22,15 +22,19 @@
         </span>
       </div>
 
-      <button class="wide start" :disabled="!canStart" @click="doStart">
+      <button class="wide start" :disabled="!canStart || !store.can('breedStart')"
+              :title="store.can('breedStart') ? '' : '仅管理员/场主可发起杂交试验'"
+              @click="doStart">
         🧪 开始杂交试验（🪙{{ b.goldCost }}，各耗 {{ PARENT_QTY }} 个）
       </button>
+      <p v-if="!store.can('breedStart')" class="perm-hint">🔒 发起杂交试验需要管理员或场主权限；试验开始后所有成员都可浇水/施肥/照料。</p>
       <p class="hint">
         子代有概率继承双亲性状，也可能突变出新品种；跨作物杂交（如萝卜×番茄）子代本源随机取一方。
         成熟后产出的新品种种子可在「地块操作」中播种。
       </p>
 
-      <button class="wide" @click="store.upgradeBuilding(b.labId)">
+      <button class="wide" :disabled="!store.can('upgrade')" :title="store.can('upgrade') ? '' : '仅场主可升级建筑'"
+              @click="store.upgradeBuilding(b.labId)">
         🔧 升级育种棚（🪙{{ b.labLevel * 40 }}）→ 同时进行更多组试验
       </button>
     </div>
@@ -221,6 +225,7 @@ h4 { margin:0 0 8px;color:#fff;display:flex;gap:8px;align-items:center; }
 .tag { font-size:10px;color:#6f84ab;background:#16263f;padding:2px 6px;border-radius:4px; }
 .tag.gen { color:#ce93d8; }
 .hint { color:#5b6f94;font-size:10px;line-height:1.6;margin:8px 0; }
+.perm-hint { color:#ffb74d;font-size:10px;line-height:1.6;margin:6px 0; }
 .wide { width:100%;margin-top:10px;background:#16263f;border:1px solid rgba(255,213,79,0.3);color:#ffd54f;border-radius:9px;padding:10px;font-size:13px;cursor:pointer; }
 .wide.start { background:linear-gradient(135deg,#6a1b9a,#8e24aa);color:#fff;border-color:transparent;font-weight:600; }
 .wide:disabled { opacity:.5;cursor:not-allowed; }

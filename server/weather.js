@@ -29,11 +29,11 @@ const SEASON_TABLE = [
 // 每日全防护消耗：金币 severity*10 + 物资 severity*1
 export const upkeepOf = (ev) => ({ gold: ev.severity * 10, mat: ev.severity })
 
-// 为指定日期生成天气并持久化；当天已有记录或仍有未结束事件则直接返回
-export function ensureWeather(season, day, absDay) {
-  const active = q1('SELECT * FROM weather_events WHERE done=0 ORDER BY abs_day LIMIT 1')
+// 为指定农场的指定日期生成天气并持久化；当天已有记录或仍有未结束事件则直接返回
+export function ensureWeather(season, day, absDay, farmId) {
+  const active = q1('SELECT * FROM weather_events WHERE farm_id=? AND done=0 ORDER BY abs_day LIMIT 1', farmId)
   if (active) return active
-  const dup = q1('SELECT * FROM weather_events WHERE abs_day=?', absDay)
+  const dup = q1('SELECT * FROM weather_events WHERE farm_id=? AND abs_day=?', farmId, absDay)
   if (dup) return dup
   const table = SEASON_TABLE[season % 4]
   const total = table.reduce((s, [, w]) => s + w, 0)
@@ -43,14 +43,14 @@ export function ensureWeather(season, day, absDay) {
   const def = TYPES[type]
   const severity = def.bad ? 1 + Math.floor(Math.random() * 3) : 0
   const duration = def.bad ? Math.min(3, 1 + Math.floor(Math.random() * (severity + 1))) : 1
-  run(`INSERT INTO weather_events (season,day,abs_day,type,name,icon,duration,severity)
-       VALUES (?,?,?,?,?,?,?,?)`, season, day, absDay, type, def.name, def.icon, duration, severity)
-  return q1('SELECT * FROM weather_events WHERE abs_day=?', absDay)
+  run(`INSERT INTO weather_events (farm_id,season,day,abs_day,type,name,icon,duration,severity)
+       VALUES (?,?,?,?,?,?,?,?,?)`, farmId, season, day, absDay, type, def.name, def.icon, duration, severity)
+  return q1('SELECT * FROM weather_events WHERE farm_id=? AND abs_day=?', farmId, absDay)
 }
 
 // 当前天气（含未结束的持续事件）；无事件时返回虚拟晴天
-export function currentWeather() {
-  const ev = q1('SELECT * FROM weather_events WHERE done=0 ORDER BY abs_day LIMIT 1')
+export function currentWeather(farmId) {
+  const ev = q1('SELECT * FROM weather_events WHERE farm_id=? AND done=0 ORDER BY abs_day LIMIT 1', farmId)
   if (!ev) {
     return { id: 0, type: 'sunny', name: TYPES.sunny.name, icon: TYPES.sunny.icon, severity: 0, duration: 1, settled_days: 0, protect_gold: 0, protect_mat: 0, bad: false, upkeepGold: 0, upkeepMat: 0, desc: TYPES.sunny.desc }
   }
@@ -59,14 +59,13 @@ export function currentWeather() {
   return { ...ev, bad: !!def.bad, desc: def.desc, upkeepGold: up.gold, upkeepMat: up.mat }
 }
 
-// 结算当前天气事件的一天，返回 { mods, logs, type, severity }
+// 结算指定农场当前天气事件的一天，返回 { mods, logs, type, severity }
 // mods 为对当日地块/动物常规更新的修正量；连续跳日时每日调用一次。
-// type/severity 供灌溉结算（降雨补水、干旱耗水）使用。
 // 幂等：同一事件同一天已写入 weather_log 则直接跳过，读档/重试不会重复扣损。
-export function settleWeather(absDay) {
+export function settleWeather(absDay, farmId) {
   const mods = { waterAdd: 0, fertAdd: 0, lightAdd: 0, setWater: null, pestAdd: 0, growthBlock: false, stageRegressChance: 0, animalHpAdd: 0, animalRecover: 0, lightRecover: 0, plantDamage: 0, plantRecover: 0, weatherBad: false }
   const logs = []
-  const ev = q1('SELECT * FROM weather_events WHERE done=0 ORDER BY abs_day LIMIT 1')
+  const ev = q1('SELECT * FROM weather_events WHERE farm_id=? AND done=0 ORDER BY abs_day LIMIT 1', farmId)
   if (!ev) {
     // 无事件：晴好恢复日
     mods.animalRecover = 8
@@ -84,7 +83,7 @@ export function settleWeather(absDay) {
     mods.animalRecover = 8
     mods.lightRecover = 10
     mods.plantRecover = 4
-    finishDay(ev, absDay, logs, `${def.icon} ${def.name}：风调雨顺，作物与动物状态恢复`)
+    finishDay(ev, absDay, logs, `${def.icon} ${def.name}：风调雨顺，作物与动物状态恢复`, farmId)
     return { mods, logs, type: ev.type, severity: ev.severity }
   }
 
@@ -119,24 +118,25 @@ export function settleWeather(absDay) {
   if (mods.growthBlock) parts.push('作物停止生长')
   if (mods.animalHpAdd) parts.push(`动物健康${mods.animalHpAdd}`)
   finishDay(ev, absDay, logs,
-    `${def.icon} ${def.name} 第${ev.settled_days + 1}/${ev.duration}天 · ${tierTxt}（防护消耗🪙${tier >= 1 ? up.gold : 0}+物资×${tier === 2 ? up.mat : 0}）：${parts.join('，') || '影响轻微'}`)
+    `${def.icon} ${def.name} 第${ev.settled_days + 1}/${ev.duration}天 · ${tierTxt}（防护消耗🪙${tier >= 1 ? up.gold : 0}+物资×${tier === 2 ? up.mat : 0}）：${parts.join('，') || '影响轻微'}`,
+    farmId)
   return { mods, logs, type: ev.type, severity: ev.severity }
 }
 
 // 写入当日结算日志并推进事件进度；事件结束时返还剩余防护金币（物资已投入不退）
-function finishDay(ev, absDay, logs, msg) {
+function finishDay(ev, absDay, logs, msg, farmId) {
   const sd = ev.settled_days + 1
   let finalMsg = msg
   if (sd >= ev.duration) {
     const left = q1('SELECT protect_gold FROM weather_events WHERE id=?', ev.id).protect_gold
     run('UPDATE weather_events SET settled_days=?, done=1 WHERE id=?', sd, ev.id)
     if (left > 0) {
-      run('UPDATE player SET gold=gold+? WHERE id=1', left)
+      run('UPDATE player SET gold=gold+? WHERE farm_id=?', left, farmId)
       finalMsg += `；事件结束，返还剩余防护金🪙${left}`
     }
   } else {
     run('UPDATE weather_events SET settled_days=? WHERE id=?', sd, ev.id)
   }
-  run('INSERT INTO weather_log (event_id,abs_day,msg) VALUES (?,?,?)', ev.id, absDay, finalMsg)
+  run('INSERT INTO weather_log (farm_id,event_id,abs_day,msg) VALUES (?,?,?,?)', farmId, ev.id, absDay, finalMsg)
   logs.push(finalMsg)
 }

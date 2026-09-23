@@ -1,11 +1,11 @@
-# 🚜 像素农场 · 种田经营（SQLite 持久化）
+# 🚜 像素农场 · 种田经营（SQLite 持久化 · 联机共营）
 
-基于 **Vue 3 + Vite + Pinia（前端）+ Express + SQLite（后端）** 的像素风种田经营游戏，`node:sqlite` 原生数据库持久化存档。
+基于 **Vue 3 + Vite + Pinia（前端）+ Express + SQLite（后端）** 的像素风种田经营游戏，`node:sqlite` 原生数据库持久化存档，支持创建/加入农场的**多人联机共营**。
 
 ## 技术栈
 
 - 前端：Vue 3 + Vite + Pinia，Canvas 2D 像素风渲染
-- 后端：Node.js（内置 `node:sqlite`）+ Express，REST API
+- 后端：Node.js（内置 `node:sqlite`）+ Express，REST API + SSE 实时推送
 - 数据库：`server/farm.db`（SQLite，首次启动自动建表 + 预置数据）
 
 ## 运行
@@ -18,6 +18,25 @@ npm run dev
 启动前端（http://localhost:5180）与后端 API（http://localhost:4110），两者同时运行。Vite 已配置 `/api` 代理到后端。
 
 > 需 Node.js ≥ 22.13（内置 `node:sqlite`）。
+
+## 联机共营（多人农场闭环）
+
+1. **创建/加入**：设置昵称进入，旧单人存档自动保留并可「认领」为自己的农场（成为场主）；
+   可创建多座独立农场，或凭 **8 位邀请码** 加入/回归好友农场
+2. **邀请管理**：管理员/场主可生成限定「角色（成员/管理员）× 次数 × 有效期」的邀请码，可复制、撤销；
+   加入次数、有效期、撤销状态在并发加入时由数据库事务保证名额不超发
+3. **成员角色（权限隔离）**：
+   - **成员**：播种/浇水/施肥/除虫/收获、买卖交易、动物领养与养护、加工排产/退料/入库、灌溉启停与地块水分设置、育种养护
+   - **管理员**：以上全部 + 推进时间与**灾害结算**、建造/拆除灌溉防灾设施、发起杂交试验、邀请管理
+   - **场主**：以上全部 + 建筑升级、成员角色调整、**转让场主**、解散农场
+   - 成员可随时退出（保留退出状态，可凭新邀请码回归）；场主须先转让或解散
+4. **实时协作**：SSE（`GET /api/events`）按农场推送 `mutation/presence/disbanded` 事件，
+   任意成员操作落库后全农场在线端静默重拉状态并在时间线提示操作者；在线成员头像实时更新
+5. **并发一致**：所有写接口校验 **乐观版本号**（`farms.version` + `X-State-Version`，冲突返回 409 自动同步重试）；
+   天气/灌溉/生产/育种的跨天联合结算由 **农场级互斥锁 + SQLite IMMEDIATE 事务** 串行化，
+   灾害结算仍按 `weather_log UNIQUE(event_id, abs_day)` 幂等落库，多端连点不会重复扣损
+6. **旧存档兼容**：启动时自动把单人表迁移为「每农场一行/一组」结构（新增 `farm_id`、重建唯一约束），
+   旧数据全部归入 id=1 的「我的农场」，无人认领前任何登录玩家可访客进入并一键认领
 
 ## 玩法
 
@@ -48,13 +67,18 @@ npm run dev
 
 ## 数据库表
 
-`player` `plots` `crops` `crop_varieties` `inventory` `buildings` `animals` `weather_events` `weather_log` `production_jobs` `irrigation` `irrigation_report` `breeding_trials`
+`farms` `users` `sessions` `farm_members` `farm_invites` `schema_meta`
+`player` `plots` `crops` `crop_varieties` `inventory` `buildings` `animals`
+`weather_events` `weather_log` `production_jobs` `irrigation` `irrigation_report` `breeding_trials`
 
+> 联机表：农场（`farms.version` 乐观锁）、账号/会话、成员（role/status）、邀请码（role/次数/有效期/撤销）。
+> 全部玩法表带 `farm_id` 隔离；`player` 为每农场一行（主键 farm_id），
+> `crops/buildings` 用复合主键 `(farm_id,id)`，`inventory/irrigation/crop_varieties` 的唯一约束按农场重建。
 > 新品种（`crop_varieties`，id 从 1000 起）与基础作物（`crops`）共用 `plots.crop_id`；
-> 旧存档启动时自动建表、补列（`plots.irr_target` 等）并补插「育种棚」建筑，无需手动迁移。
+> 旧存档启动时自动迁移（建表、补列、重建约束、补插「育种棚」），无需手动迁移。
 > 灌溉调度的纯逻辑在 `server/irrigation-core.js`（网络划分/耗水估算/分水计划，不依赖数据库），
 > 可运行 `node --test server/irrigation-core.test.mjs` 执行单元测试。
 
 ## 后续可扩展
 
-矿洞探险、节日活动、好友拜访/联机、图鉴成就、多存档、存档导出、游玩教程引导
+矿洞探险、节日活动、图鉴成就、存档导出、游玩教程引导、操作分成员留痕（审计日志）

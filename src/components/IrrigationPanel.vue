@@ -2,15 +2,20 @@
   <div class="panel irr-panel">
     <h3>💧 灌溉系统</h3>
 
-    <!-- 建造 -->
+    <!-- 建造（管理员+） -->
     <div class="build-row">
-      <button class="build-btn" :class="{on: store.irrBuildMode==='reservoir'}" @click="store.setIrrBuildMode('reservoir')">
+      <button class="build-btn" :class="{on: store.irrBuildMode==='reservoir', deny: !store.can('irrigBuild')}"
+              :disabled="!store.can('irrigBuild')"
+              @click="store.setIrrBuildMode('reservoir')">
         🛢️ 蓄水池 <span class="cost">🪙{{ store.irrigationCosts.reservoir }}</span>
       </button>
-      <button class="build-btn" :class="{on: store.irrBuildMode==='canal'}" @click="store.setIrrBuildMode('canal')">
+      <button class="build-btn" :class="{on: store.irrBuildMode==='canal', deny: !store.can('irrigBuild')}"
+              :disabled="!store.can('irrigBuild')"
+              @click="store.setIrrBuildMode('canal')">
         ➖ 水渠 <span class="cost">🪙{{ store.irrigationCosts.canal }}/段</span>
       </button>
     </div>
+    <p class="perm-tip" v-if="!store.can('irrigBuild')">🔒 建造/拆除灌溉设施需要管理员或场主权限，你可以查看网络并停用/启用设施、设置地块水分。</p>
     <p class="hint" v-if="store.irrBuildMode">
       点击地图空地放置{{ store.irrBuildMode === 'reservoir' ? '蓄水池' : '水渠（可连续铺设）' }}，再次点击按钮取消
     </p>
@@ -63,7 +68,7 @@
           <span class="f-state" :class="stateClass(f)">{{ stateText(f) }}</span>
         </div>
         <button class="mini" @click="store.toggleIrrigation(f.id)">{{ f.active ? '停用' : '启用' }}</button>
-        <button class="mini red" @click="demolish(f)">拆除</button>
+        <button class="mini red" :disabled="!store.can('irrigDemolish')" @click="demolish(f)">拆除</button>
       </div>
     </div>
     <div class="none" v-else>还没有灌溉设施，先建一座蓄水池吧</div>
@@ -131,6 +136,8 @@ h3 { margin:0 0 10px;color:#fff;font-size:15px; }
   padding:10px;color:#dbe4f3;cursor:pointer;font-size:12px;display:flex;flex-direction:column;gap:4px;align-items:center;
 }
 .build-btn.on { border-color:#29b6f6;box-shadow:0 0 0 1px #29b6f6;background:#12314f; }
+.build-btn:disabled, .build-btn.deny { opacity:.45;cursor:not-allowed; }
+.perm-tip { color:#ffb74d;font-size:10px;margin:6px 0 0;line-height:1.5; }
 .cost { color:#ffc107;font-size:11px; }
 .hint { color:#8ba2c8;font-size:11px;margin:8px 0 0;line-height:1.5; }
 .hint.rules { color:#5b6f94;border-top:1px dashed rgba(120,160,220,0.15);padding-top:8px; }

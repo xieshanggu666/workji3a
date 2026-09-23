@@ -78,7 +78,8 @@
           <button class="mini" :disabled="!canMake(r,5)" @click="doEnqueue(r,5)">排产×5</button>
         </div>
       </div>
-      <button class="wide" @click="store.upgradeBuilding(mill.id)">🔧 升级加工坊（🪙{{ mill.level*40 }}）→ 扩容队列、解锁更多配方</button>
+      <button class="wide" :disabled="!store.can('upgrade')" :title="store.can('upgrade') ? '' : '仅场主可升级建筑'"
+              @click="store.upgradeBuilding(mill.id)">🔧 升级加工坊（🪙{{ mill.level*40 }}）→ 扩容队列、解锁更多配方</button>
     </div>
 
     <!-- 生产队列 -->
@@ -136,7 +137,8 @@
           <button class="mini green" :disabled="!a.ready" @click="store.collectAnimal(a.id)">🧺 收集</button>
         </div>
       </div>
-      <button class="wide" @click="store.upgradeBuilding(barn.id)">🔧 升级畜棚（🪙{{ barn.level*40 }}）</button>
+      <button class="wide" :disabled="!store.can('upgrade')" :title="store.can('upgrade') ? '' : '仅场主可升级建筑'"
+              @click="store.upgradeBuilding(barn.id)">🔧 升级畜棚（🪙{{ barn.level*40 }}）</button>
     </div>
   </div>
 
@@ -163,7 +165,9 @@
       <div class="row" v-for="b in store.buildings" :key="b.id">
         <span class="i">🏠</span>
         <div class="m-info"><b>{{ b.name }}</b><span class="tag">Lv.{{ b.level }}</span><span class="desc">{{ b.desc }}</span></div>
-        <button class="mini" @click="store.upgradeBuilding(b.id)">升级</button>
+        <button class="mini" :disabled="!store.can('upgrade')"
+                :title="store.can('upgrade') ? '' : '仅场主可升级建筑'"
+                @click="store.upgradeBuilding(b.id)">升级</button>
       </div>
     </div>
   </div>
