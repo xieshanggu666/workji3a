@@ -26,6 +26,7 @@
           保水优先级
           <button v-for="(l, i) in ['低','中','高']" :key="i"
                   :class="{sel: (p.irr_priority ?? 1) === i}"
+                  :disabled="!store.can('irrigation')"
                   @click="store.setIrrPriority(p.id, i)">{{ l }}</button>
         </span>
       </div>
@@ -36,6 +37,7 @@
         </span>
         <input type="range" min="0" max="100" step="5"
                :value="p.irr_target ?? 100"
+               :disabled="!store.can('irrigation')"
                @change="store.setIrrTarget(p.id, +$event.target.value)" />
       </div>
       <p class="irr-use" v-if="estUse != null">预计日耗水 ≈{{ estUse }}（灌溉按此与天气调度供水）</p>
@@ -49,6 +51,7 @@
           <button v-for="c in seedChoices" :key="c.id"
                   class="seed-opt"
                   :class="{sel: store.selectedCropId===c.id}"
+                  :disabled="!store.can('plant')"
                   @click="store.selectedCropId = c.id">
             <span class="sc-icon">{{ c.sprite }}</span>
             <span class="sc-name">{{ c.name }}<em v-if="c.isVariety">🧬</em></span>
@@ -59,7 +62,7 @@
             <span class="sc-seed">×{{ c.qty }}</span>
           </button>
         </div>
-        <button class="action primary" @click="store.plant()" :disabled="!store.selectedCropId">🌱 播种</button>
+        <button class="action primary" @click="store.plant()" :disabled="!store.selectedCropId || !store.can('plant')">🌱 播种</button>
       </template>
 
       <!-- 已种：养护操作 -->
@@ -75,10 +78,10 @@
           </i>
         </div>
         <div class="actions-grid">
-          <button class="action" @click="store.water()">💧 浇水</button>
-          <button class="action" @click="store.fertilize()">🟫 施肥</button>
-          <button class="action" @click="store.clean()">🧹 除虫</button>
-          <button class="action harvest" @click="store.harvest()">🧺 收获</button>
+          <button class="action" :disabled="!store.can('plant')" @click="store.water()">💧 浇水</button>
+          <button class="action" :disabled="!store.can('plant')" @click="store.fertilize()">🟫 施肥</button>
+          <button class="action" :disabled="!store.can('plant')" @click="store.clean()">🧹 除虫</button>
+          <button class="action harvest" :disabled="!store.can('plant')" @click="store.harvest()">🧺 收获</button>
         </div>
       </template>
     </template>

@@ -1,12 +1,45 @@
 import { defineStore } from 'pinia'
+import { api, getToken } from '@/api'
 
-async function api(path, method = 'GET', body) {
-  const opt = { method, headers: { 'Content-Type': 'application/json' } }
-  if (body) opt.body = JSON.stringify(body)
-  const r = await fetch('/api' + path, opt)
-  const data = await r.json()
-  if (!r.ok) throw new Error(data.error || '请求失败')
-  return data
+// 多端实时同步：远端世界写事件合并刷新（防抖），并广播 SSE 事件给 UI（如被踢下线）
+const listeners = { auth: [] }
+export function onCoopEvent(fn) { listeners.auth.push(fn); return () => { listeners.auth = listeners.auth.filter((f) => f !== fn) } }
+function emitAuth(payload) { listeners.auth.forEach((fn) => fn(payload)) }
+let syncTimer = null
+let inflight = null
+function scheduleSync(store) {
+  if (syncTimer) return
+  syncTimer = setTimeout(async () => {
+    syncTimer = null
+    if (!getToken()) return
+    inflight = (inflight || Promise.resolve()).then(() => store.load({ silent: true })).catch(() => {})
+  }, 200)
+}
+
+// 由 coop store 在登录/加入成功后开启；断线 EventSource 原生自动重连
+let es = null
+export function connectRealtime(store) {
+  disconnectRealtime()
+  if (!getToken()) return
+  es = new EventSource('/api/coop/events?token=' + encodeURIComponent(getToken()))
+  es.addEventListener('state', () => scheduleSync(store))
+  es.addEventListener('coop', () => {
+    scheduleSync(store)
+    emitAuth({ type: 'coop' })
+  })
+  es.addEventListener('presence', (e) => {
+    try { store.onlineUserIds = JSON.parse(e.data).online || [] } catch { /* ignore */ }
+  })
+  // 服务端主动踢下线（被移出农场/共营解散）：停止重连并通知 UI 回到加入界面
+  es.addEventListener('kicked', () => {
+    disconnectRealtime()
+    emitAuth({ type: 'denied', error: '你已退出该农场' })
+  })
+  // 普通断线由 EventSource 自动重连；若令牌失效，load() 的 401 会接管引导流程
+  es.onerror = () => { /* keep auto-retry */ }
+}
+export function disconnectRealtime() {
+  if (es) { es.close(); es = null }
 }
 
 export const useGameStore = defineStore('game', {
@@ -35,9 +68,22 @@ export const useGameStore = defineStore('game', {
     seedMode: false,
     selectedCropId: null,
     toast: null,
-    timeline: []
+    timeline: [],
+    me: null,                 // 当前玩家共营身份 {userId,name,role,online}
+    farm: null,               // 农场信息 {name,coopEnabled,rev}
+    onlineUserIds: [],        // 当前在线成员 userId 列表（SSE presence）
+    caps: null                // 当前角色权限表（由 /api/coop/state 填充）
   }),
   getters: {
+    // 权限检查：单机老界面默认全部放行（未完成共营引导时），共营模式严格以服务端下发的 caps 为准
+    can() {
+      return (domain) => {
+        if (!this.caps) return true
+        return !!this.caps[domain]
+      }
+    },
+    isOwner: (s) => s.me?.role === 'owner',
+    isAdminOrOwner: (s) => s.me?.role === 'owner' || s.me?.role === 'admin',
     seasonLabel: (s) => {
       const map = ['🌸 春', '☀️ 夏', '🍂 秋', '❄️ 冬']
       return s.player ? map[s.player.season % 4] : '🌸 春'
@@ -54,8 +100,14 @@ export const useGameStore = defineStore('game', {
     }
   },
   actions: {
-    async load() {
-      const d = await api('/state')
+    async load(opts = {}) {
+      let d
+      try {
+        d = await api('/state')
+      } catch (e) {
+        if (!opts.silent && e.status !== 401) this.showToast(e.message, 'warn')
+        throw e
+      }
       this.player = d.player
       this.crops = d.crops
       this.varieties = d.varieties || []
@@ -74,7 +126,10 @@ export const useGameStore = defineStore('game', {
       this.irrigationCosts = d.irrigationCosts || this.irrigationCosts
       this.irrigationNetworks = d.irrigationNetworks || []
       this.irrigationReport = d.irrigationReport || null
+      this.me = d.me || null
+      this.farm = d.farm || null
       this.loaded = true
+      return d
     },
     pushLog(msg, type = 'info') {
       this.timeline.unshift({ msg, type, time: new Date().toLocaleTimeString('zh-CN') })
@@ -86,48 +141,70 @@ export const useGameStore = defineStore('game', {
     },
     clearToast() { this.toast = null },
 
+    // 前端权限隔离（服务端仍会强制校验）：无权限直接拦截并提示
+    guard(domain) {
+      if (this.caps && !this.caps[domain]) {
+        const who = this.caps.coopManage ? '管理员或农场主' : '管理员'
+        this.showToast(`权限不足：该操作需要${who}`, 'warn')
+        return false
+      }
+      return true
+    },
+    // 401/403 处理：被移出农场或令牌失效时通知共营层回到加入界面
+    handleAuthError(e) {
+      if (e?.status === 401 || e?.status === 403) emitAuth({ type: 'denied', error: e.message })
+    },
+
     async refresh() { await this.load() },
 
     async plant() {
       if (!this.selectedPlot || !this.selectedCropId) return
+      if (!this.guard('plant')) return
       try {
         await api('/plant', 'POST', { plotId: this.selectedPlot.id, cropId: this.selectedCropId })
         await this.load()
       } catch (e) { this.showToast(e.message, 'warn') }
     },
     async water() {
-      if (!this.selectedPlot) return
+      if (!this.selectedPlot || !this.guard('plant')) return
       await api('/water', 'POST', { plotId: this.selectedPlot.id })
       await this.load()
     },
     async fertilize() {
-      if (!this.selectedPlot) return
+      if (!this.selectedPlot || !this.guard('plant')) return
       await api('/fertilize', 'POST', { plotId: this.selectedPlot.id })
       await this.load()
     },
     async clean() {
-      if (!this.selectedPlot) return
+      if (!this.selectedPlot || !this.guard('plant')) return
       await api('/clean', 'POST', { plotId: this.selectedPlot.id })
       await this.load()
     },
     async harvest() {
-      if (!this.selectedPlot) return
+      if (!this.selectedPlot || !this.guard('plant')) return
       const r = await api('/harvest', 'POST', { plotId: this.selectedPlot.id })
       if (r.ok) this.showToast(`收获 ${r.yield} ×${r.qty || 1} +${r.gold}金${r.variety ? '🧬' : ''}`, 'success')
       else this.showToast('作物还未成熟', 'warn')
       await this.load()
     },
     async nextDay(n = 1) {
-      const r = await api('/skip', 'POST', { n })
-      await this.load()
-      const logs = r.logs || []
+      if (!this.guard('time')) return
+      try {
+        const r = await api('/skip', 'POST', { n })
+        await this.load({ silent: true })
+        const logs = r.logs || []
       // 天气/系统结算记录只进时间线，不弹 toast；加工完工与育种成功取第一条弹提示
       logs.forEach((m) => { if (!m.startsWith('✅') && !m.startsWith('🧬')) this.pushLog(m, 'warn') })
       const done = logs.filter((m) => m.startsWith('✅') || m.startsWith('🧬'))
       if (done.length) this.showToast(done[0], 'success')
       else this.showToast(`时间 +${n} 天`, 'info')
+      } catch (e) {
+        this.handleAuthError(e)
+        this.showToast(e.message, 'warn')
+      }
     },
     async protect(gold, matQty) {
+      if (!this.guard('disaster')) return
       try {
         await api('/weather/protect', 'POST', { gold, matQty })
         await this.load()
@@ -135,6 +212,7 @@ export const useGameStore = defineStore('game', {
       } catch (e) { this.showToast(e.message, 'warn') }
     },
     async buyMat(qty = 1) {
+      if (!this.guard('trade')) return
       try {
         await api('/buymat', 'POST', { qty })
         await this.load()
@@ -142,6 +220,7 @@ export const useGameStore = defineStore('game', {
       } catch (e) { this.showToast(e.message, 'warn') }
     },
     async buySeed(cropId, qty = 1) {
+      if (!this.guard('trade')) return
       try {
         await api('/buyseed', 'POST', { cropId, qty })
         await this.load()
@@ -149,6 +228,7 @@ export const useGameStore = defineStore('game', {
       } catch (e) { this.showToast(e.message, 'warn') }
     },
     async sellCrop(cropId, qty = 1) {
+      if (!this.guard('trade')) return
       try {
         const r = await api('/sellcrop', 'POST', { cropId, qty })
         await this.load()
@@ -156,6 +236,7 @@ export const useGameStore = defineStore('game', {
       } catch (e) { this.showToast(e.message, 'warn') }
     },
     async buyAnimal(species) {
+      if (!this.guard('husbandry')) return
       try {
         await api('/animal', 'POST', { species })
         await this.load()
@@ -163,10 +244,12 @@ export const useGameStore = defineStore('game', {
       } catch (e) { this.showToast(e.message, 'warn') }
     },
     async feedAnimal(id) {
+      if (!this.guard('husbandry')) return
       await api('/feed', 'POST', { id })
       await this.load()
     },
     async collectAnimal(id) {
+      if (!this.guard('husbandry')) return
       try {
         const r = await api('/collect', 'POST', { id })
         await this.load()
@@ -175,6 +258,7 @@ export const useGameStore = defineStore('game', {
     },
     // 批量排产
     async enqueueProduction(recipeId, qty) {
+      if (!this.guard('production')) return
       try {
         await api('/production/enqueue', 'POST', { recipeId, qty })
         await this.load()
@@ -183,6 +267,7 @@ export const useGameStore = defineStore('game', {
     },
     // 取消工单（退未开工批次的原料，按实际投料原样退回杂交品种）
     async cancelProduction(id) {
+      if (!this.guard('production')) return
       try {
         const r = await api('/production/cancel', 'POST', { id })
         await this.load()
@@ -194,6 +279,7 @@ export const useGameStore = defineStore('game', {
     },
     // 完工入库：传 id 领单个，不传一键全领
     async collectProduction(id = null) {
+      if (!this.guard('production')) return
       try {
         const r = await api('/production/collect', 'POST', id == null ? {} : { id })
         await this.load()
@@ -202,6 +288,7 @@ export const useGameStore = defineStore('game', {
       } catch (e) { this.showToast(e.message, 'warn') }
     },
     async upgradeBuilding(id) {
+      if (!this.guard('buildings')) return
       try {
         await api('/upgrade', 'POST', { id })
         await this.load()
@@ -215,6 +302,7 @@ export const useGameStore = defineStore('game', {
       this.irrBuildMode = this.irrBuildMode === kind ? null : kind
     },
     async buildIrrigation(kind, x, y) {
+      if (!this.guard('irrigation')) return
       try {
         await api('/irrigation/build', 'POST', { kind, x, y })
         await this.load()
@@ -224,6 +312,7 @@ export const useGameStore = defineStore('game', {
       } catch (e) { this.showToast(e.message, 'warn') }
     },
     async toggleIrrigation(id) {
+      if (!this.guard('irrigation')) return
       try {
         const r = await api('/irrigation/toggle', 'POST', { id })
         await this.load()
@@ -231,6 +320,7 @@ export const useGameStore = defineStore('game', {
       } catch (e) { this.showToast(e.message, 'warn') }
     },
     async demolishIrrigation(id) {
+      if (!this.guard('irrigation')) return
       try {
         const r = await api('/irrigation/demolish', 'POST', { id })
         await this.load()
@@ -238,12 +328,14 @@ export const useGameStore = defineStore('game', {
       } catch (e) { this.showToast(e.message, 'warn') }
     },
     async setIrrPriority(plotId, priority) {
+      if (!this.guard('irrigation')) return
       try {
         await api('/irrigation/priority', 'POST', { plotId, priority })
         await this.load()
       } catch (e) { this.showToast(e.message, 'warn') }
     },
     async setIrrTarget(plotId, target) {
+      if (!this.guard('irrigation')) return
       try {
         await api('/irrigation/target', 'POST', { plotId, target })
         await this.load()
@@ -252,6 +344,7 @@ export const useGameStore = defineStore('game', {
 
     // ===== 杂交育种 =====
     async startBreeding(parentA, parentB) {
+      if (!this.guard('breeding')) return
       try {
         await api('/breeding/start', 'POST', { parentA, parentB })
         await this.load()
@@ -259,12 +352,14 @@ export const useGameStore = defineStore('game', {
       } catch (e) { this.showToast(e.message, 'warn'); throw e }
     },
     async careBreeding(id, action) {
+      if (!this.guard('breeding')) return
       try {
         await api('/breeding/care', 'POST', { id, action })
         await this.load()
       } catch (e) { this.showToast(e.message, 'warn') }
     },
     async cancelBreeding(id) {
+      if (!this.guard('breeding')) return
       try {
         await api('/breeding/cancel', 'POST', { id })
         await this.load()

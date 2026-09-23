@@ -7,6 +7,9 @@
     </button>
   </div>
 
+  <!-- 联机共营 -->
+  <CoopPanel v-if="tab==='coop'" />
+
   <!-- 育种棚 -->
   <BreedingPanel v-if="tab==='breed'" />
 
@@ -22,8 +25,8 @@
           <span class="tag">{{ c.days }}天成熟</span>
         </div>
         <span class="price seed">🪙{{ c.seedPrice }}</span>
-        <button class="mini" @click="store.buySeed(c.id,1)">买</button>
-        <button class="mini" @click="store.buySeed(c.id,5)">买×5</button>
+        <button class="mini" :disabled="!store.can('trade')" @click="store.buySeed(c.id,1)">买</button>
+        <button class="mini" :disabled="!store.can('trade')" @click="store.buySeed(c.id,5)">买×5</button>
       </div>
     </div>
     <div class="pcol card">
@@ -33,8 +36,8 @@
         <span class="i">{{ s.icon }}</span>
         <div class="m-info"><b>{{ s.name }}<span v-if="s.isVariety" class="tag gen">🧬 品种</span></b><span class="tag">×{{ s.qty }}</span></div>
         <span class="price">🪙{{ s.unit }} /个</span>
-        <button class="mini green" @click="store.sellCrop(s.cropId,1)">卖1</button>
-        <button class="mini green" @click="store.sellCrop(s.cropId,5)">卖5</button>
+        <button class="mini green" :disabled="!store.can('trade')" @click="store.sellCrop(s.cropId,1)">卖1</button>
+        <button class="mini green" :disabled="!store.can('trade')" @click="store.sellCrop(s.cropId,5)">卖5</button>
       </div>
     </div>
     <div class="pcol card">
@@ -47,8 +50,8 @@
           <span class="tag">持有 ×{{ matCount }}</span>
         </div>
         <span class="price seed">🪙12</span>
-        <button class="mini" @click="store.buyMat(1)">买</button>
-        <button class="mini" @click="store.buyMat(5)">买×5</button>
+        <button class="mini" :disabled="!store.can('trade')" @click="store.buyMat(1)">买</button>
+        <button class="mini" :disabled="!store.can('trade')" @click="store.buyMat(5)">买×5</button>
       </div>
     </div>
   </div>
@@ -74,17 +77,17 @@
           <span class="tag" :class="{mixed:r.baseCrop}">库存 ×{{ recipeStock(r) }}{{ r.baseCrop ? '（含🧬品种）' : '' }}</span>
         </div>
         <div class="proc-ctl">
-          <button class="mini" :disabled="!canMake(r,1)" @click="doEnqueue(r,1)">排产×1</button>
-          <button class="mini" :disabled="!canMake(r,5)" @click="doEnqueue(r,5)">排产×5</button>
+          <button class="mini" :disabled="!canMake(r,1) || !store.can('production')" @click="doEnqueue(r,1)">排产×1</button>
+          <button class="mini" :disabled="!canMake(r,5) || !store.can('production')" @click="doEnqueue(r,5)">排产×5</button>
         </div>
       </div>
-      <button class="wide" @click="store.upgradeBuilding(mill.id)">🔧 升级加工坊（🪙{{ mill.level*40 }}）→ 扩容队列、解锁更多配方</button>
+      <button class="wide" :disabled="!store.can('buildings')" @click="store.upgradeBuilding(mill.id)">🔧 升级加工坊（🪙{{ mill.level*40 }}）→ 扩容队列、解锁更多配方</button>
     </div>
 
     <!-- 生产队列 -->
     <div class="pcol card">
       <h4>🏭 生产队列
-        <button v-if="collectableJobs.length" class="mini green collect-all" @click="store.collectProduction()">
+        <button v-if="collectableJobs.length" class="mini green collect-all" :disabled="!store.can('production')" @click="store.collectProduction()">
           一键入库（{{ collectableBatches }}）
         </button>
       </h4>
@@ -101,9 +104,9 @@
           <span class="tag" v-if="j.status==='canceled' && j.refundedBatches>0">已退 {{ j.refundedBatches }} 批原料</span>
           <div class="job-bar"><i :style="{width:(j.doneBatches/j.qty*100)+'%'}"></i></div>
         </div>
-        <button v-if="j.status==='running'" class="mini" @click="store.cancelProduction(j.id)">取消退料</button>
+        <button v-if="j.status==='running'" class="mini" :disabled="!store.can('production')" @click="store.cancelProduction(j.id)">取消退料</button>
         <button v-if="(j.computedStatus==='done' || j.status==='canceled') && j.doneBatches>0"
-                class="mini green" @click="store.collectProduction(j.id)">
+                class="mini green" :disabled="!store.can('production')" @click="store.collectProduction(j.id)">
           入库 ×{{ j.gain*j.doneBatches }}
         </button>
       </div>
@@ -115,9 +118,9 @@
     <div class="pcol card">
       <h4>🐖 畜棚 <span class="lvl">Lv.{{ barn.level }}</span></h4>
       <div class="adopt">
-        <button class="ad" @click="store.buyAnimal('chicken')">🐔 母鸡 <span>🪙30</span></button>
-        <button class="ad" @click="store.buyAnimal('sheep')">🐑 绵羊 <span>🪙60</span></button>
-        <button class="ad" @click="store.buyAnimal('cow')">🐄 奶牛 <span>🪙80</span></button>
+        <button class="ad" :disabled="!store.can('husbandry')" @click="store.buyAnimal('chicken')">🐔 母鸡 <span>🪙30</span></button>
+        <button class="ad" :disabled="!store.can('husbandry')" @click="store.buyAnimal('sheep')">🐑 绵羊 <span>🪙60</span></button>
+        <button class="ad" :disabled="!store.can('husbandry')" @click="store.buyAnimal('cow')">🐄 奶牛 <span>🪙80</span></button>
       </div>
       <div class="animal-list">
         <div v-if="!store.animals.length" class="none">还没有动物，请领养</div>
@@ -132,11 +135,11 @@
             <div class="hp"><div class="bar"><i :style="{width:a.health+'%',background:healthColor}"></i></div><span class="tiny">健{{ Math.round(a.health) }}</span></div>
           </div>
           <span class="ready" v-if="a.ready">可收集</span>
-          <button class="mini" @click="store.feedAnimal(a.id)">🥣 喂食</button>
-          <button class="mini green" :disabled="!a.ready" @click="store.collectAnimal(a.id)">🧺 收集</button>
+          <button class="mini" :disabled="!store.can('husbandry')" @click="store.feedAnimal(a.id)">🥣 喂食</button>
+          <button class="mini green" :disabled="!a.ready || !store.can('husbandry')" @click="store.collectAnimal(a.id)">🧺 收集</button>
         </div>
       </div>
-      <button class="wide" @click="store.upgradeBuilding(barn.id)">🔧 升级畜棚（🪙{{ barn.level*40 }}）</button>
+      <button class="wide" :disabled="!store.can('buildings')" @click="store.upgradeBuilding(barn.id)">🔧 升级畜棚（🪙{{ barn.level*40 }}）</button>
     </div>
   </div>
 
@@ -163,19 +166,25 @@
       <div class="row" v-for="b in store.buildings" :key="b.id">
         <span class="i">🏠</span>
         <div class="m-info"><b>{{ b.name }}</b><span class="tag">Lv.{{ b.level }}</span><span class="desc">{{ b.desc }}</span></div>
-        <button class="mini" @click="store.upgradeBuilding(b.id)">升级</button>
+        <button class="mini" :disabled="!store.can('buildings')" @click="store.upgradeBuilding(b.id)">升级</button>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useGameStore } from '@/store/game'
 import BreedingPanel from '@/components/BreedingPanel.vue'
+import CoopPanel from '@/components/CoopPanel.vue'
 const store = useGameStore()
 const tab = ref('market')
 const healthColor = '#4caf50'
+
+// 顶部共营身份条点击时切到共营页
+function onTabEvent(e) { if (e.detail) tab.value = e.detail }
+onMounted(() => window.addEventListener('pixifarm:tab', onTabEvent))
+onUnmounted(() => window.removeEventListener('pixifarm:tab', onTabEvent))
 
 const tabs = [
   { key: 'market', label: '🏪 市场' },
@@ -183,7 +192,8 @@ const tabs = [
   { key: 'breed', label: '🧬 育种' },
   { key: 'barn', label: '🐖 畜棚' },
   { key: 'bag', label: '🎒 背包' },
-  { key: 'build', label: '🏠 建筑' }
+  { key: 'build', label: '🏠 建筑' },
+  { key: 'coop', label: '👥 共营' }
 ]
 
 // 库存作物 → 展示信息（兼容杂交品种 crop-v<id>）

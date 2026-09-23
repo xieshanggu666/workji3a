@@ -4,14 +4,17 @@
 
     <!-- 建造 -->
     <div class="build-row">
-      <button class="build-btn" :class="{on: store.irrBuildMode==='reservoir'}" @click="store.setIrrBuildMode('reservoir')">
+      <button class="build-btn" :class="{on: store.irrBuildMode==='reservoir'}"
+              :disabled="!store.can('irrigation')" @click="store.setIrrBuildMode('reservoir')">
         🛢️ 蓄水池 <span class="cost">🪙{{ store.irrigationCosts.reservoir }}</span>
       </button>
-      <button class="build-btn" :class="{on: store.irrBuildMode==='canal'}" @click="store.setIrrBuildMode('canal')">
+      <button class="build-btn" :class="{on: store.irrBuildMode==='canal'}"
+              :disabled="!store.can('irrigation')" @click="store.setIrrBuildMode('canal')">
         ➖ 水渠 <span class="cost">🪙{{ store.irrigationCosts.canal }}/段</span>
       </button>
     </div>
-    <p class="hint" v-if="store.irrBuildMode">
+    <p class="hint" v-if="!store.can('irrigation')">🔒 灌溉设施的建造与改造仅管理员/农场主可操作，你可以查看供水状态。</p>
+    <p class="hint" v-else-if="store.irrBuildMode">
       点击地图空地放置{{ store.irrBuildMode === 'reservoir' ? '蓄水池' : '水渠（可连续铺设）' }}，再次点击按钮取消
     </p>
     <p class="hint" v-else>蓄水池储水，水渠连接蓄水池与耕地；每日结算时自动为连通地块浇水</p>
@@ -62,8 +65,8 @@
           </div>
           <span class="f-state" :class="stateClass(f)">{{ stateText(f) }}</span>
         </div>
-        <button class="mini" @click="store.toggleIrrigation(f.id)">{{ f.active ? '停用' : '启用' }}</button>
-        <button class="mini red" @click="demolish(f)">拆除</button>
+        <button class="mini" :disabled="!store.can('irrigation')" @click="store.toggleIrrigation(f.id)">{{ f.active ? '停用' : '启用' }}</button>
+        <button class="mini red" :disabled="!store.can('irrigation')" @click="demolish(f)">拆除</button>
       </div>
     </div>
     <div class="none" v-else>还没有灌溉设施，先建一座蓄水池吧</div>

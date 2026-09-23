@@ -2,8 +2,8 @@
   <div class="canvas-wrap">
     <canvas ref="cv" :width="W" :height="H" @click="onClick" @mousemove="onMove" @mouseleave="hoverCell = null"></canvas>
     <div class="irr-ctl">
-      <button :class="{on: store.irrBuildMode==='reservoir'}" @click="store.setIrrBuildMode('reservoir')">🛢️ 蓄水池 🪙{{ store.irrigationCosts.reservoir }}</button>
-      <button :class="{on: store.irrBuildMode==='canal'}" @click="store.setIrrBuildMode('canal')">➖ 水渠 🪙{{ store.irrigationCosts.canal }}</button>
+      <button :class="{on: store.irrBuildMode==='reservoir'}" :disabled="!store.can('irrigation')" @click="store.setIrrBuildMode('reservoir')">🛢️ 蓄水池 🪙{{ store.irrigationCosts.reservoir }}</button>
+      <button :class="{on: store.irrBuildMode==='canal'}" :disabled="!store.can('irrigation')" @click="store.setIrrBuildMode('canal')">➖ 水渠 🪙{{ store.irrigationCosts.canal }}</button>
     </div>
     <div class="map-tip build" v-if="store.irrBuildMode">
       {{ store.irrBuildMode === 'reservoir' ? '🛢️ 点击空地放置蓄水池' : '➖ 点击空地铺设水渠（可连续铺设）' }} · 再点右上角按钮取消

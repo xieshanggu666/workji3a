@@ -217,3 +217,75 @@ const jobCols = db.prepare('PRAGMA table_info(production_jobs)').all().map((c) =
 if (!jobCols.includes('inputs')) {
   db.exec('ALTER TABLE production_jobs ADD COLUMN inputs TEXT DEFAULT NULL')
 }
+
+// ===== 联机共营 =====
+// 本作仍是「单一世界」存档：farms 目前恒为 id=1，其行保存世界级共营设置
+// （共营开启状态、世界数据版本号 rev——每次世界写操作 +1，用于多端 SSE 去重）。
+db.exec(`
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  token TEXT NOT NULL UNIQUE,
+  created_abs INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS farms (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  name TEXT NOT NULL DEFAULT '我们的农场',
+  coop_enabled INTEGER NOT NULL DEFAULT 0,  -- 0 单机 1 共营（发出邀请或有第二人加入时置 1）
+  rev INTEGER NOT NULL DEFAULT 0            -- 世界数据版本号（单调递增，并发更新落库）
+);
+
+CREATE TABLE IF NOT EXISTS farm_members (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  farm_id INTEGER NOT NULL DEFAULT 1,
+  user_id INTEGER NOT NULL UNIQUE,          -- 一个玩家同时只能在一个农场
+  role TEXT NOT NULL DEFAULT 'member',      -- owner/admin/member
+  status TEXT NOT NULL DEFAULT 'active',    -- active/left（退出后保留行做审计快照；重新加入复用并置 active）
+  left_abs INTEGER,
+  joined_abs INTEGER NOT NULL,
+  UNIQUE(farm_id, user_id)
+);
+
+-- 邀请：
+--   kind='direct' 邀请码：持码者直接成为成员（管理员以上可发，可一次性/限时）
+--   kind='share'  农场长期码：持码者提交加入申请，需管理员以上审批
+CREATE TABLE IF NOT EXISTS farm_invites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  farm_id INTEGER NOT NULL DEFAULT 1,
+  code TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL DEFAULT 'direct',      -- direct/share
+  created_by INTEGER NOT NULL,
+  uses_max INTEGER NOT NULL DEFAULT 1,      -- 可用次数（share 长期码可设很大）
+  uses INTEGER NOT NULL DEFAULT 0,
+  expire_abs INTEGER,                       -- NULL 长期有效；否则按绝对游戏天过期
+  revoked INTEGER NOT NULL DEFAULT 0
+);
+
+-- 加入申请（使用 share 农场码时产生，等待审批）
+CREATE TABLE IF NOT EXISTS farm_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  farm_id INTEGER NOT NULL DEFAULT 1,
+  user_id INTEGER NOT NULL,
+  message TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',   -- pending/approved/rejected
+  decided_by INTEGER,
+  created_abs INTEGER NOT NULL,
+  decided_abs INTEGER,
+  UNIQUE(farm_id, user_id)
+);
+
+-- 共营审计流水：邀请/申请/角色/退出/转让/解散/跳日等敏感动作留痕，多端可查
+CREATE TABLE IF NOT EXISTS farm_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  farm_id INTEGER NOT NULL DEFAULT 1,
+  actor_id INTEGER,                         -- 操作者（NULL 表示系统）
+  actor_name TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL,                     -- invite/create|join|request|approve|reject|role|kick|leave|transfer|dissolve|time
+  detail TEXT NOT NULL DEFAULT '',
+  abs_day INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_farm_audit_farm ON farm_audit(farm_id, id);
+`)

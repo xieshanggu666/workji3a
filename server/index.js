@@ -13,9 +13,65 @@ import {
   TRAITS, BREED_GOLD, breedCapacity,
   cropLike, listTrials, startTrial, careTrial, cancelTrial, settleBreeding
 } from './breeding.js'
+import { router as coopRouter, hub } from './coop/routes.js'
+import { userByToken, activeMemberOf, addAudit, bumpRev, farmRow } from './coop/service.js'
+import { can } from './coop/permissions.js'
+import { withLock } from './coop/lock.js'
 
 const app = express()
 app.use(express.json())
+
+// ===== 联机共营：身份解析 + 农场写串行化 =====
+// 共营接口（引导/注册/加入/SSE 等）自管鉴权与加锁，全部放行给 coopRouter
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/coop')) return next()
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || req.query.token
+  req.user = userByToken(token)
+  req.me = req.user ? activeMemberOf(req.user.id) : null
+  next()
+})
+
+// 世界数据写接口：要求农场有效成员；同一农场的写操作经互斥锁串行化，
+// 与各业务事务配合，保证多端并发下的权限隔离与数据一致。
+const FARM_LOCK = 'farm:1'
+app.use((req, res, next) => {
+  if (req.method === 'GET' || req.path.startsWith('/api/coop')) return next()
+  if (!req.path.startsWith('/api/')) return next()
+  if (!req.me || req.me.status !== 'active') {
+    return res.status(401).json({ error: '请先登录并加入农场' })
+  }
+  withLock(FARM_LOCK, () => new Promise((resolve) => {
+    // 响应结束后再放行下一把锁，确保后续读取者拿到的是最新落库数据
+    res.on('finish', resolve)
+    next()
+  })).catch(next)
+})
+
+// 权限隔离中间件工厂
+const need = (domain, action = '*') => (req, res, next) => {
+  if (!can(req.me.role, domain, action)) {
+    return res.status(403).json({ error: '权限不足：需要管理员或农场主' })
+  }
+  next()
+}
+
+// 世界数据版本广播：成功的业务写请求让其它在线端实时拉取最新状态
+app.use((req, res, next) => {
+  if (req.method !== 'GET' && req.path.startsWith('/api/') && req.me) {
+    const end = res.json.bind(res)
+    res.json = (body) => {
+      if (res.statusCode >= 200 && res.statusCode < 300 && !req.suppressBroadcast) {
+        const rev = bumpRev()
+        hub.state(1, rev, req.me.user_id)
+      }
+      return end(body)
+    }
+  }
+  next()
+})
+
+// 共营接口（自身权限与广播在 routes 内处理，避免重复 bumpRev）
+app.use('/api/coop', coopRouter)
 
 // ===== 初始化种子数据（仅首次） =====
 function seed() {
@@ -74,7 +130,11 @@ const p0 = q1('SELECT * FROM player WHERE id=1')
 ensureWeather(p0.season, p0.day, p0.abs_day)
 
 // ===== API =====
-app.get('/api/state', (req, res) => {
+// 读取世界状态必须是农场成员（共营闭环：未加入者看不到农场数据）
+app.get('/api/state', (req, res, next) => {
+  if (!req.me || req.me.status !== 'active') return res.status(401).json({ error: 'not member', needAuth: true })
+  next()
+}, (req, res) => {
   const p = q1('SELECT * FROM player WHERE id=1')
   const mill = q1('SELECT * FROM buildings WHERE id=2')
   const lab = q1("SELECT * FROM buildings WHERE name='育种棚'")
@@ -116,12 +176,20 @@ app.get('/api/state', (req, res) => {
       id: n.id, reservoirs: n.reservoirs.length, canals: n.canalIds.length,
       plots: n.plotIds.size, water: n.water, cap: n.cap
     })),
-    irrigationReport: lastReport()
+    irrigationReport: lastReport(),
+    // 当前操作者的共营身份（角色/权限/世界版本），前端据此做按钮级权限隔离
+    me: {
+      userId: req.me.user_id,
+      name: req.me.user_name,
+      role: req.me.role,
+      online: hub.onlineUserIds(1)
+    },
+    farm: (() => { const f = farmRow(); return { name: f.name, coopEnabled: !!f.coop_enabled, rev: f.rev } })()
   })
 })
 
 // 播种：plotId + cropId（<1000 基础作物，>=1000 杂交品种）
-app.post('/api/plant', (req, res) => {
+app.post('/api/plant', need('plant'), (req, res) => {
   const { plotId, cropId } = req.body
   const plot = q1('SELECT * FROM plots WHERE id=?', plotId)
   const crop = cropLike(cropId)
@@ -140,28 +208,28 @@ app.post('/api/plant', (req, res) => {
 })
 
 // 浇水
-app.post('/api/water', (req, res) => {
+app.post('/api/water', need('plant'), (req, res) => {
   const { plotId } = req.body
   run('UPDATE plots SET water=100 WHERE id=?', plotId)
   res.json({ ok: true })
 })
 
 // 施肥
-app.post('/api/fertilize', (req, res) => {
+app.post('/api/fertilize', need('plant'), (req, res) => {
   const { plotId } = req.body
   run('UPDATE plots SET fert=100 WHERE id=?', plotId)
   res.json({ ok: true })
 })
 
 // 除草/除虫
-app.post('/api/clean', (req, res) => {
+app.post('/api/clean', need('plant'), (req, res) => {
   const { plotId } = req.body
   run('UPDATE plots SET pest=0 WHERE id=?', plotId)
   res.json({ ok: true })
 })
 
 // 收获：返回作物，给钱（若成熟）；品种按遗传性状结算产量与售价
-app.post('/api/harvest', (req, res) => {
+app.post('/api/harvest', need('plant'), (req, res) => {
   const { plotId } = req.body
   const plot = q1('SELECT * FROM plots WHERE id=?', plotId)
   if (!plot || !plot.crop_id) return res.status(404).json({ error: 'empty' })
@@ -191,22 +259,24 @@ app.post('/api/harvest', (req, res) => {
   return res.json({ ok: false, reason: 'not grown' })
 })
 
-// 时间推进 1 天
-app.post('/api/nextday', (req, res) => {
+// 时间推进 1 天（仅管理员/农场主：防止普通成员私自结算灾害、消耗防护储备）
+app.post('/api/nextday', need('time'), (req, res) => {
   const logs = advanceDay()
+  addAudit({ actorId: req.me.user_id, actorName: req.me.user_name, action: 'time', detail: '推进时间 1 天' })
   res.json({ ok: true, logs })
 })
 
 // 时间推进为主（快速）：连续跳日逐天结算天气防护消耗、损失与恢复
-app.post('/api/skip', (req, res) => {
+app.post('/api/skip', need('time'), (req, res) => {
   const n = Math.min(Number(req.body?.n) || 1, 14)
   const logs = []
   for (let i = 0; i < n; i++) logs.push(...advanceDay())
+  addAudit({ actorId: req.me.user_id, actorName: req.me.user_name, action: 'time', detail: `推进时间 ${n} 天` })
   res.json({ ok: true, logs })
 })
 
 // 投入金币/物资防灾（作用于当前未结束的天气事件）
-app.post('/api/weather/protect', (req, res) => {
+app.post('/api/weather/protect', need('disaster'), (req, res) => {
   const gold = Math.max(0, Math.min(Math.floor(Number(req.body?.gold) || 0), 500))
   const matQty = Math.max(0, Math.min(Math.floor(Number(req.body?.matQty) || 0), 99))
   if (!gold && !matQty) return res.status(400).json({ error: '未投入任何资源' })
@@ -240,7 +310,7 @@ app.post('/api/weather/protect', (req, res) => {
 })
 
 // 购买防灾物资
-app.post('/api/buymat', (req, res) => {
+app.post('/api/buymat', need('trade'), (req, res) => {
   const n = Math.max(1, Math.min(Number(req.body?.qty) || 1, 99))
   const cost = 12 * n
   const p = q1('SELECT gold FROM player WHERE id=1')
@@ -251,7 +321,7 @@ app.post('/api/buymat', (req, res) => {
 })
 
 // 买种子
-app.post('/api/buyseed', (req, res) => {
+app.post('/api/buyseed', need('trade'), (req, res) => {
   const { cropId, qty } = req.body
   const n = Math.max(1, Math.min(Number(qty) || 1, 99))
   const crop = q1('SELECT * FROM crops WHERE id=?', cropId)
@@ -265,7 +335,7 @@ app.post('/api/buyseed', (req, res) => {
 })
 
 // 卖作物（兼容杂交品种：cropId>=1000 走品种库存与价格）
-app.post('/api/sellcrop', (req, res) => {
+app.post('/api/sellcrop', need('trade'), (req, res) => {
   const { cropId, qty } = req.body
   const n = Math.max(1, Math.min(Number(qty) || 1, 999))
   const crop = cropLike(cropId)
@@ -283,7 +353,7 @@ app.post('/api/sellcrop', (req, res) => {
 })
 
 // 领养动物
-app.post('/api/animal', (req, res) => {
+app.post('/api/animal', need('husbandry'), (req, res) => {
   const { species } = req.body
   const cfg = { chicken: { name: '母鸡', cost: 30 }, cow: { name: '奶牛', cost: 80 }, sheep: { name: '绵羊', cost: 60 } }
   const c = cfg[species]
@@ -297,14 +367,14 @@ app.post('/api/animal', (req, res) => {
 })
 
 // 喂食
-app.post('/api/feed', (req, res) => {
+app.post('/api/feed', need('husbandry'), (req, res) => {
   const { id } = req.body
   run('UPDATE animals SET feed=100 WHERE id=?', id)
   res.json({ ok: true })
 })
 
 // 收集动物产物
-app.post('/api/collect', (req, res) => {
+app.post('/api/collect', need('husbandry'), (req, res) => {
   const { id } = req.body
   const a = q1('SELECT * FROM animals WHERE id=?', id)
   if (!a || !a.ready) return res.status(400).json({ error: 'not ready' })
@@ -318,7 +388,7 @@ app.post('/api/collect', (req, res) => {
 
 // ===== 加工生产队列 =====
 // 批量排产：recipeId + qty（批次数）
-app.post('/api/production/enqueue', (req, res) => {
+app.post('/api/production/enqueue', need('production'), (req, res) => {
   try {
     const { recipeId, qty } = req.body
     const p = q1('SELECT * FROM player WHERE id=1')
@@ -336,7 +406,7 @@ app.post('/api/production/enqueue', (req, res) => {
 })
 
 // 取消工单：退未开工批次的原料
-app.post('/api/production/cancel', (req, res) => {
+app.post('/api/production/cancel', need('production'), (req, res) => {
   try {
     const p = q1('SELECT abs_day FROM player WHERE id=1')
     const r = cancelJob({ id: Number(req.body?.id), currentAbs: p.abs_day })
@@ -347,7 +417,7 @@ app.post('/api/production/cancel', (req, res) => {
 })
 
 // 完工入库：传 id 领单个，不传则一键全领
-app.post('/api/production/collect', (req, res) => {
+app.post('/api/production/collect', need('production'), (req, res) => {
   try {
     const p = q1('SELECT abs_day FROM player WHERE id=1')
     const r = collectJobs(p.abs_day, req.body?.id != null ? Number(req.body.id) : null)
@@ -359,7 +429,7 @@ app.post('/api/production/collect', (req, res) => {
 
 // ===== 灌溉系统 =====
 // 建造蓄水池/水渠：kind + 坐标，扣金币
-app.post('/api/irrigation/build', (req, res) => {
+app.post('/api/irrigation/build', need('irrigation'), (req, res) => {
   try {
     const { kind, x, y } = req.body || {}
     res.json(buildFacility(kind, Number(x), Number(y)))
@@ -369,7 +439,7 @@ app.post('/api/irrigation/build', (req, res) => {
 })
 
 // 停用/启用：停用即断流，启用后恢复供水
-app.post('/api/irrigation/toggle', (req, res) => {
+app.post('/api/irrigation/toggle', need('irrigation'), (req, res) => {
   try {
     res.json(toggleFacility(Number(req.body?.id)))
   } catch (e) {
@@ -378,7 +448,7 @@ app.post('/api/irrigation/toggle', (req, res) => {
 })
 
 // 拆除：返还部分造价，蓄水池余水作废
-app.post('/api/irrigation/demolish', (req, res) => {
+app.post('/api/irrigation/demolish', need('irrigation'), (req, res) => {
   try {
     res.json(demolishFacility(Number(req.body?.id)))
   } catch (e) {
@@ -387,7 +457,7 @@ app.post('/api/irrigation/demolish', (req, res) => {
 })
 
 // 设置地块灌溉优先级（0低 1中 2高）
-app.post('/api/irrigation/priority', (req, res) => {
+app.post('/api/irrigation/priority', need('irrigation'), (req, res) => {
   const plotId = Number(req.body?.plotId)
   const priority = Math.max(0, Math.min(2, Math.floor(Number(req.body?.priority) || 0)))
   if (!q1('SELECT id FROM plots WHERE id=?', plotId)) return res.status(404).json({ error: 'not found' })
@@ -396,7 +466,7 @@ app.post('/api/irrigation/priority', (req, res) => {
 })
 
 // 设置地块目标水分（0~100，灌溉时浇到该水位为止；0 表示不自动浇水）
-app.post('/api/irrigation/target', (req, res) => {
+app.post('/api/irrigation/target', need('irrigation'), (req, res) => {
   const plotId = Number(req.body?.plotId)
   const target = Math.max(0, Math.min(100, Math.floor(Number(req.body?.target) || 0)))
   if (!q1('SELECT id FROM plots WHERE id=?', plotId)) return res.status(404).json({ error: 'not found' })
@@ -406,7 +476,7 @@ app.post('/api/irrigation/target', (req, res) => {
 
 // ===== 杂交育种 =====
 // 开始试验：两批作物 parentA/parentB，格式 base:<id> 或 var:<id>
-app.post('/api/breeding/start', (req, res) => {
+app.post('/api/breeding/start', need('breeding'), (req, res) => {
   try {
     const lab = q1("SELECT level FROM buildings WHERE name='育种棚'")
     const p = q1('SELECT abs_day FROM player WHERE id=1')
@@ -423,7 +493,7 @@ app.post('/api/breeding/start', (req, res) => {
 })
 
 // 养护试验：water 浇水 / fert 施肥 / tend 照料
-app.post('/api/breeding/care', (req, res) => {
+app.post('/api/breeding/care', need('breeding'), (req, res) => {
   try {
     res.json(careTrial(Number(req.body?.id), String(req.body?.action || '')))
   } catch (e) {
@@ -432,7 +502,7 @@ app.post('/api/breeding/care', (req, res) => {
 })
 
 // 取消试验（亲本不退）
-app.post('/api/breeding/cancel', (req, res) => {
+app.post('/api/breeding/cancel', need('breeding'), (req, res) => {
   try {
     res.json(cancelTrial(Number(req.body?.id)))
   } catch (e) {
@@ -441,7 +511,7 @@ app.post('/api/breeding/cancel', (req, res) => {
 })
 
 // 升级建筑
-app.post('/api/upgrade', (req, res) => {
+app.post('/api/upgrade', need('buildings'), (req, res) => {
   const { id } = req.body
   const b = q1('SELECT * FROM buildings WHERE id=?', id)
   if (!b || b.level >= 5) return res.status(400).json({ error: 'max' })

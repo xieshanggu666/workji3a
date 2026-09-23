@@ -22,7 +22,7 @@
         </span>
       </div>
 
-      <button class="wide start" :disabled="!canStart" @click="doStart">
+      <button class="wide start" :disabled="!canStart || !store.can('breeding')" @click="doStart">
         🧪 开始杂交试验（🪙{{ b.goldCost }}，各耗 {{ PARENT_QTY }} 个）
       </button>
       <p class="hint">
@@ -30,7 +30,7 @@
         成熟后产出的新品种种子可在「地块操作」中播种。
       </p>
 
-      <button class="wide" @click="store.upgradeBuilding(b.labId)">
+      <button class="wide" :disabled="!store.can('buildings')" @click="store.upgradeBuilding(b.labId)">
         🔧 升级育种棚（🪙{{ b.labLevel * 40 }}）→ 同时进行更多组试验
       </button>
     </div>
@@ -73,10 +73,10 @@
             <div class="pbar"><i :style="{width:(t.progress/t.days_total*100)+'%'}"></i></div>
           </div>
           <div class="tr-actions">
-            <button class="mini" @click="store.careBreeding(t.id,'water')">💧 浇水</button>
-            <button class="mini" @click="store.careBreeding(t.id,'fert')">🟫 施肥</button>
-            <button class="mini" @click="store.careBreeding(t.id,'tend')">🧑‍🌾 照料</button>
-            <button class="mini red" @click="cancelT(t)">放弃</button>
+            <button class="mini" :disabled="!store.can('breeding')" @click="store.careBreeding(t.id,'water')">💧 浇水</button>
+            <button class="mini" :disabled="!store.can('breeding')" @click="store.careBreeding(t.id,'fert')">🟫 施肥</button>
+            <button class="mini" :disabled="!store.can('breeding')" @click="store.careBreeding(t.id,'tend')">🧑‍🌾 照料</button>
+            <button class="mini red" :disabled="!store.can('breeding')" @click="cancelT(t)">放弃</button>
           </div>
         </template>
 

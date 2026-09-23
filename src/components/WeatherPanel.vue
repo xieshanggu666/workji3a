@@ -12,12 +12,13 @@
       <div class="p-row">🛡️ 防护储备：<b>🪙{{ w.protect_gold }}</b> · <b>物资×{{ w.protect_mat }}</b></div>
       <div class="p-row upkeep">每日全防护消耗：🪙{{ w.upkeepGold }} + 物资×{{ w.upkeepMat }}</div>
       <div class="p-btns">
-        <button @click="store.protect(20, 0)">+🪙20</button>
-        <button @click="store.protect(50, 0)">+🪙50</button>
-        <button :disabled="matCount < 1" @click="store.protect(0, 1)">+物资×1</button>
-        <button :disabled="matCount < 3" @click="store.protect(0, 3)">+物资×3</button>
+        <button :disabled="!store.can('disaster')" @click="store.protect(20, 0)">+🪙20</button>
+        <button :disabled="!store.can('disaster')" @click="store.protect(50, 0)">+🪙50</button>
+        <button :disabled="matCount < 1 || !store.can('disaster')" @click="store.protect(0, 1)">+物资×1</button>
+        <button :disabled="matCount < 3 || !store.can('disaster')" @click="store.protect(0, 3)">+物资×3</button>
       </div>
-      <p class="p-hint">物资可在市场购买（当前持有 ×{{ matCount }}）；事件结束返还剩余金币，物资不退。跳日时按天自动结算防护消耗。</p>
+      <p class="p-hint" v-if="!store.can('disaster')">🔒 灾害防护投入仅管理员/农场主可操作。</p>
+      <p class="p-hint" v-else>物资可在市场购买（当前持有 ×{{ matCount }}）；事件结束返还剩余金币，物资不退。跳日时按天自动结算防护消耗。</p>
     </template>
     <p class="p-hint" v-else>天气良好，无需防护。恶劣天气来临时可在此投入金币与物资防灾。</p>
 
